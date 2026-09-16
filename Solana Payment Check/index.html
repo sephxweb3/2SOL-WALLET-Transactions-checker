@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Directional SPL Token Transfer Finder</title>
+  <style>
+    :root{color-scheme:dark;--bg:#070a12;--card:#101522;--line:#273044;--text:#f4f7ff;--muted:#97a3ba;--purple:#9945ff;--green:#14f195;--red:#ff6680}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 20% 0,#1a1230 0,transparent 38%),var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,sans-serif}
+    main{width:min(1080px,calc(100% - 28px));margin:50px auto}.eyebrow{color:var(--green);font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(28px,5vw,48px);margin:8px 0}.intro{color:var(--muted);max-width:730px;margin:0 0 28px}
+    .card{background:rgba(16,21,34,.92);border:1px solid var(--line);border-radius:20px;padding:22px;box-shadow:0 22px 70px #0008}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wide{grid-column:1/-1}
+    label{display:block;color:#cbd3e4;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:7px}input{width:100%;border:1px solid var(--line);background:#090d17;color:var(--text);border-radius:12px;padding:13px 14px;outline:none}input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #9945ff22}
+    .actions{display:flex;gap:12px;align-items:center;margin-top:18px;flex-wrap:wrap}button{border:0;border-radius:12px;padding:13px 18px;font-weight:900;cursor:pointer;color:#07110d;background:linear-gradient(120deg,var(--green),#8cffd0)}button:disabled{opacity:.55;cursor:wait}.hint{color:var(--muted);font-size:12px}.notice{margin-top:16px;padding:12px 14px;border-radius:12px;background:#0b101b;color:var(--muted);border:1px solid var(--line)}.notice.error{color:#ffd2da;border-color:#7c2938;background:#1d0e14}.notice.success{color:#bcffe4;border-color:#1d6c50;background:#0b1c17}
+    .summary{display:flex;justify-content:space-between;align-items:end;gap:15px;margin:30px 0 12px}.summary h2{margin:0;font-size:22px}.count{color:var(--muted)}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--card)}table{width:100%;border-collapse:collapse;min-width:760px}th,td{text-align:left;padding:14px;border-bottom:1px solid var(--line)}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:#0b101a}tr:last-child td{border-bottom:0}.amount{color:var(--green);font-weight:900}.signature{font-family:ui-monospace,monospace}.signature a{color:#bd91ff;text-decoration:none}.signature a:hover{text-decoration:underline}.empty{text-align:center;color:var(--muted);padding:34px}.loader{display:none;width:18px;height:18px;border:2px solid #07110d55;border-top-color:#07110d;border-radius:50%;animation:spin .7s linear infinite}.loading .loader{display:inline-block}.loading .button-text{display:none}@keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-width:700px){main{margin:24px auto}.card{padding:16px}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.summary{align-items:start;flex-direction:column}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Helius · Mainnet</div>
+  <h1>Directional Token Transfer Finder</h1>
+  <p class="intro">Lists only transfers of the specified SPL token sent from the sender to the receiver. Transfers in the reverse direction and transfers of other tokens are ignored.</p>
+
+  <section class="card">
+    <form id="searchForm">
+      <div class="grid">
+        <div class="wide"><label for="apiKey">Helius API key</label><input id="apiKey" type="password" autocomplete="off" placeholder="Paste your Helius API key" required></div>
+        <div class="wide"><label for="tokenMint">Token CA / mint address</label><input id="tokenMint" spellcheck="false" placeholder="SPL token contract address" required></div>
+        <div><label for="sender">Sender Solana address</label><input id="sender" spellcheck="false" placeholder="Expected payment sender" required></div>
+        <div><label for="receiver">Receiver Solana address</label><input id="receiver" spellcheck="false" placeholder="Your receiving wallet" required></div>
+      </div>
+      <div class="actions">
+        <button id="searchButton" type="submit"><span class="button-text">Find token payments</span><span class="loader"></span></button>
+        <span class="hint">Checks up to 500 recent receiver transactions.</span>
+      </div>
+    </form>
+    <div id="status" class="notice" role="status">Enter the API key, token CA, and both wallet addresses.</div>
+  </section>
+
+  <div class="summary"><h2>Matching transactions</h2><div id="count" class="count">0 results</div></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date &amp; time</th><th>Token amount</th><th>Signature</th><th>Sender</th><th>Receiver</th></tr></thead>
+      <tbody id="results"><tr><td class="empty" colspan="5">No search performed yet.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const form = document.getElementById('searchForm');
+  const button = document.getElementById('searchButton');
+  const statusBox = document.getElementById('status');
+  const resultsBody = document.getElementById('results');
+  const countBox = document.getElementById('count');
+
+  function isSolanaAddress(value) {
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+  }
+
+  function short(value) {
+    return `${value.slice(0, 5)}…${value.slice(-5)}`;
+  }
+
+  function setStatus(message, type = '') {
+    statusBox.textContent = message;
+    statusBox.className = `notice ${type}`.trim();
+  }
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+
+  async function fetchReceiverHistory(receiver, apiKey) {
+    const all = [];
+    let before = '';
+    for (let page = 0; page < 5; page++) {
+      const query = new URLSearchParams({'api-key': apiKey, limit: '100'});
+      if (before) query.set('before', before);
+      const url = `https://api.helius.xyz/v0/addresses/${encodeURIComponent(receiver)}/transactions?${query}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        let detail = '';
+        try { detail = (await response.json()).error || ''; } catch (_) {}
+        throw new Error(detail || `Helius request failed (${response.status}).`);
+      }
+      const pageItems = await response.json();
+      if (!Array.isArray(pageItems)) throw new Error('Unexpected response from Helius.');
+      all.push(...pageItems);
+      if (pageItems.length < 100) break;
+      before = pageItems[pageItems.length - 1]?.signature || '';
+      if (!before) break;
+    }
+    return all;
+  }
+
+  function findDirectionalTransfers(transactions, sender, receiver, tokenMint) {
+    const matches = [];
+    const seen = new Set();
+    for (const tx of transactions) {
+      if (tx.transactionError || !tx.signature) continue;
+      for (const transfer of (tx.tokenTransfers || [])) {
+        if (transfer.fromUserAccount !== sender || transfer.toUserAccount !== receiver || transfer.mint !== tokenMint) continue;
+        const key = `${tx.signature}:${transfer.fromUserAccount}:${transfer.toUserAccount}:${transfer.mint}:${transfer.tokenAmount}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        matches.push({
+          signature: tx.signature,
+          timestamp: Number(tx.timestamp || 0),
+          tokenAmount: Number(transfer.tokenAmount || 0),
+          mint: transfer.mint,
+          sender: transfer.fromUserAccount,
+          receiver: transfer.toUserAccount
+        });
+      }
+    }
+    return matches.sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  function render(matches) {
+    countBox.textContent = `${matches.length} result${matches.length === 1 ? '' : 's'}`;
+    if (!matches.length) {
+      resultsBody.innerHTML = '<tr><td class="empty" colspan="5">No matching directional token transfers found in the checked history.</td></tr>';
+      return;
+    }
+    resultsBody.innerHTML = matches.map(item => {
+      const date = item.timestamp ? new Date(item.timestamp * 1000).toLocaleString() : 'Time unavailable';
+      const explorer = `https://solscan.io/tx/${encodeURIComponent(item.signature)}`;
+      return `<tr>
+        <td>${escapeHTML(date)}</td>
+        <td class="amount" title="Mint: ${escapeHTML(item.mint)}">${item.tokenAmount.toLocaleString(undefined, {maximumFractionDigits: 12})}</td>
+        <td class="signature"><a href="${explorer}" target="_blank" rel="noopener noreferrer" title="${escapeHTML(item.signature)}">${escapeHTML(short(item.signature))}</a></td>
+        <td title="${escapeHTML(item.sender)}">${escapeHTML(short(item.sender))}</td>
+        <td title="${escapeHTML(item.receiver)}">${escapeHTML(short(item.receiver))}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const apiKey = document.getElementById('apiKey').value.trim();
+    const tokenMint = document.getElementById('tokenMint').value.trim();
+    const sender = document.getElementById('sender').value.trim();
+    const receiver = document.getElementById('receiver').value.trim();
+
+    if (!isSolanaAddress(tokenMint) || !isSolanaAddress(sender) || !isSolanaAddress(receiver)) {
+      setStatus('Please enter a valid token CA, sender address, and receiver address.', 'error');
+      return;
+    }
+    if (sender === receiver) {
+      setStatus('Sender and receiver must be different addresses.', 'error');
+      return;
+    }
+
+    button.disabled = true;
+    button.classList.add('loading');
+    setStatus('Checking receiver history for the specified token and sender → receiver direction…');
+    try {
+      const transactions = await fetchReceiverHistory(receiver, apiKey);
+      const matches = findDirectionalTransfers(transactions, sender, receiver, tokenMint);
+      render(matches);
+      setStatus(`Checked ${transactions.length} receiver transactions. Reverse transfers and other token mints were excluded.`, 'success');
+    } catch (error) {
+      console.error(error);
+      render([]);
+      setStatus(error.message || 'Unable to load transactions.', 'error');
+    } finally {
+      button.disabled = false;
+      button.classList.remove('loading');
+    }
+  });
+</script>
+</body>
+</html>
